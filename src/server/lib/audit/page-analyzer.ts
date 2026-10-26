@@ -11,6 +11,7 @@
  * tokenizer keeps only the accumulated text and extracted fields in memory.
  */
 import { Parser } from "htmlparser2";
+import { z } from "zod";
 import { normalizeUrl, isSameOrigin } from "./url-utils";
 import type { PageAnalysis, PageLink } from "./types";
 
@@ -35,6 +36,29 @@ const MAX_ANCHOR_CHARS = 200;
  */
 const MAX_EXTRACTED_LINKS = 1_000;
 const MAX_EXTRACTED_IMAGES = 1_000;
+// Skip oversized blocks whole: truncation would manufacture JSON errors.
+const MAX_JSON_LD_BLOCK_CHARS = 100_000;
+const MAX_JSON_LD_BLOCKS = 20;
+const MAX_JSON_LD_NODES = 200;
+const jsonLdObjectSchema = z.record(z.string(), z.unknown());
+// Google's required properties per rich-result type. Article and Organization
+// have only recommended properties, so they are not checked.
+const REQUIRED_JSON_LD_PROPERTIES: Record<string, readonly string[]> = {
+  LocalBusiness: ["name", "address"],
+  Product: ["name"],
+  FAQPage: ["mainEntity"],
+  BreadcrumbList: ["itemListElement"],
+  Event: ["name", "startDate", "location"],
+  Recipe: ["name", "image"],
+};
+
+function hasJsonLdValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
 // Common app entry points. Scripts alone also appear on ordinary HTML pages.
 const APP_ROOT_IDS = new Set(["root", "app", "__next", "__nuxt"]);
 /**
@@ -135,7 +159,10 @@ export function analyzeHtml(
   let ogTitle: string | null = null;
   let ogDescription: string | null = null;
   let ogImage: string | null = null;
-  let hasStructuredData = false;
+  const structuredDataIssues: PageAnalysis["structuredDataIssues"] = [];
+  let jsonLdText: string | null = null;
+  let jsonLdBlocks = 0;
+  let jsonLdNodes = 0;
   let hasAppRoot = false;
   let hasExecutableScript = false;
   const hreflangTags: string[] = [];
@@ -157,6 +184,72 @@ export function analyzeHtml(
   let sawBody = false;
   const bodyParts: string[] = [];
   const fallbackParts: string[] = [];
+
+  const validateJsonLd = (text: string, block: number) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      structuredDataIssues.push({
+        issueType: "invalid-json-ld",
+        details: { block },
+      });
+      return;
+    }
+
+    // Only document and @graph nodes need a type. Property values can be
+    // untyped value objects or @id references, so don't walk arbitrary keys.
+    const pending: unknown[] = [parsed];
+    let object = 0;
+    while (pending.length > 0 && jsonLdNodes < MAX_JSON_LD_NODES) {
+      const value = pending.pop();
+      jsonLdNodes += 1;
+      if (Array.isArray(value)) {
+        const count = Math.min(
+          value.length,
+          MAX_JSON_LD_NODES - jsonLdNodes - pending.length,
+        );
+        for (let i = count - 1; i >= 0; i--) pending.push(value[i]);
+        continue;
+      }
+      const result = jsonLdObjectSchema.safeParse(value);
+      if (!result.success) continue;
+      const node = result.data;
+      object += 1;
+      const rawTypes = node["@type"];
+      const types = (Array.isArray(rawTypes) ? rawTypes : [rawTypes]).filter(
+        (type): type is string => typeof type === "string" && !!type.trim(),
+      );
+      if (types.length === 0 && !("@graph" in node)) {
+        structuredDataIssues.push({
+          issueType: "json-ld-missing-type",
+          details: { block, object },
+        });
+      }
+      for (const type of new Set(types)) {
+        if (!Object.hasOwn(REQUIRED_JSON_LD_PROPERTIES, type)) continue;
+        const required = REQUIRED_JSON_LD_PROPERTIES[type];
+        const missingProperties = required.filter(
+          (property) => !hasJsonLdValue(node[property]),
+        );
+        if (
+          type === "Product" &&
+          !["offers", "review", "aggregateRating"].some((property) =>
+            hasJsonLdValue(node[property]),
+          )
+        ) {
+          missingProperties.push("offers/review/aggregateRating");
+        }
+        if (missingProperties.length > 0) {
+          structuredDataIssues.push({
+            issueType: "json-ld-missing-required-properties",
+            details: { block, object, type, missingProperties },
+          });
+        }
+      }
+      if ("@graph" in node) pending.push(node["@graph"]);
+    }
+  };
 
   const addVisibleText = (text: string) => {
     if (suppressDepth > 0) return;
@@ -261,7 +354,8 @@ export function analyzeHtml(
               "application/javascript",
             ].includes(attribs["type"]?.toLowerCase() ?? "");
             if (attribs["type"] === "application/ld+json") {
-              hasStructuredData = true;
+              jsonLdBlocks += 1;
+              if (jsonLdBlocks <= MAX_JSON_LD_BLOCKS) jsonLdText = "";
             }
             break;
           case "a": {
@@ -286,6 +380,12 @@ export function analyzeHtml(
         }
       },
       ontext(text) {
+        if (jsonLdText !== null) {
+          jsonLdText =
+            jsonLdText.length + text.length <= MAX_JSON_LD_BLOCK_CHARS
+              ? jsonLdText + text
+              : null;
+        }
         if (suppressDepth > 0) return;
         if (titleDepth > 0) {
           if (title !== null) title += text;
@@ -296,6 +396,10 @@ export function analyzeHtml(
         addVisibleText(text);
       },
       onclosetag(name) {
+        if (name === "script" && jsonLdText !== null) {
+          validateJsonLd(jsonLdText, jsonLdBlocks);
+          jsonLdText = null;
+        }
         if (NON_CONTENT_TAGS.has(name) && suppressDepth > 0) {
           suppressDepth -= 1;
         }
@@ -353,7 +457,8 @@ export function analyzeHtml(
       images.length === 0,
     images,
     links: Array.from(linksByTarget.values()),
-    hasStructuredData,
+    hasStructuredData: jsonLdBlocks > 0,
+    structuredDataIssues,
     hreflangTags,
   };
 }

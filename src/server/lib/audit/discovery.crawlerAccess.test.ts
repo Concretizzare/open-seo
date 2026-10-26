@@ -23,24 +23,27 @@ describe("discoverUrls crawler access", () => {
     vi.unstubAllGlobals();
   });
 
-  it("drops the signature when robots.txt redirects to another host", async () => {
-    vi.mocked(fetch).mockImplementation((input) => {
-      if (input === "https://store.example.com/robots.txt") {
-        return Promise.resolve(
-          new Response(null, {
-            status: 301,
-            headers: { location: "https://cdn.other.test/robots.txt" },
-          }),
-        );
-      }
-      return Promise.resolve(new Response("", { status: 404 }));
-    });
+  it.each(["robots.txt", "llms.txt"])(
+    "drops the signature when %s redirects to another host",
+    async (path) => {
+      vi.mocked(fetch).mockImplementation((input) => {
+        if (input === `https://store.example.com/${path}`) {
+          return Promise.resolve(
+            new Response(null, {
+              status: 301,
+              headers: { location: `https://cdn.other.test/${path}` },
+            }),
+          );
+        }
+        return Promise.resolve(new Response("", { status: 404 }));
+      });
 
-    await discoverUrls("https://store.example.com", 10, access);
+      await discoverUrls("https://store.example.com", 10, access);
 
-    expect(signatureSentTo("https://store.example.com/robots.txt")).toBe(
-      access.headers.Signature,
-    );
-    expect(signatureSentTo("https://cdn.other.test/robots.txt")).toBeNull();
-  });
+      expect(signatureSentTo(`https://store.example.com/${path}`)).toBe(
+        access.headers.Signature,
+      );
+      expect(signatureSentTo(`https://cdn.other.test/${path}`)).toBeNull();
+    },
+  );
 });

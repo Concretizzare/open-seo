@@ -115,6 +115,15 @@ export function runPageReporters(page: CrawledPageResult): DetectedIssue[] {
     report("deep-page", { crawlDepth: page.crawlDepth });
   }
 
+  for (const [index, issue] of (page.structuredDataIssues ?? []).entries()) {
+    issues.push({
+      ...issue,
+      pageId: page.id,
+      pageUrl: page.url,
+      dedupeKey: String(index),
+    });
+  }
+
   // The initial app shell cannot establish what the rendered page is missing.
   // Report the coverage gap instead of thin-content/missing-heading claims.
   if (page.javascriptShell) {

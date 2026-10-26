@@ -3,12 +3,13 @@
  */
 import robotsParser from "robots-parser";
 import { XMLParser } from "fast-xml-parser";
-import { readBodyCapped } from "./html-response";
+import { readBodyCapped, readTextUpTo } from "./html-response";
 import { isSameOrigin, normalizeUrl } from "./url-utils";
 import { isCrawlableUrl } from "./url-policy";
 import { publicFetch } from "@/server/lib/public-fetch";
 import { createRateLimitWait, type RateLimitWait } from "./crawl-throttle";
 import type { CrawlerAccess } from "@/shared/crawler-access";
+import type { DetectedIssue } from "./issues/page-reporters";
 import {
   auditRequestHeaders,
   CRAWL_USER_AGENT,
@@ -21,6 +22,30 @@ const SITEMAP_FETCH_TIMEOUT_MS = 15_000;
 // that — so this cap matches standard crawler behavior while keeping a
 // misbehaving server (e.g. HTML at /robots.txt) from blowing the step limit.
 const MAX_ROBOTS_TXT_BYTES = 500 * 1024;
+const MAX_LLMS_TXT_BYTES = 64 * 1024;
+const AI_BOT_GROUPS = [
+  {
+    issueType: "ai-search-bots-blocked",
+    bots: [
+      "OAI-SearchBot",
+      "ChatGPT-User",
+      "Claude-SearchBot",
+      "Claude-User",
+      "PerplexityBot",
+      "Perplexity-User",
+    ],
+  },
+  {
+    issueType: "ai-training-bots-blocked",
+    bots: [
+      "GPTBot",
+      "ClaudeBot",
+      "Google-Extended",
+      "Applebot-Extended",
+      "CCBot",
+    ],
+  },
+] as const;
 const MAX_SITEMAP_DEPTH = 3;
 const MAX_SITEMAP_DOCS = 300;
 const SITEMAP_CONCURRENCY = 5;
@@ -36,34 +61,57 @@ const xmlParser = new XMLParser({
 });
 
 export interface RobotsResult {
-  isAllowed: (url: string) => boolean;
+  isAllowed: (url: string, userAgent?: string) => boolean;
   sitemapUrls: string[];
 }
 
 /**
- * Fetch the raw robots.txt body (null = missing/unreachable). Kept separate
+ * Fetch a small discovery text file (null = missing/unreachable). Kept separate
  * from parsing so Workflows can checkpoint the text as durable step state and
  * re-derive the parsed result deterministically on replay.
  */
-async function fetchRobotsTxtText(
+async function fetchDiscoveryText(
   origin: string,
+  path: "robots.txt" | "llms.txt",
   access: CrawlerAccess | null | undefined,
   waitForRateLimit: RateLimitWait,
 ): Promise<string | null> {
   try {
-    const fetchRobots = () =>
-      fetchFollowingRedirects(`${origin}/robots.txt`, 10_000, access);
-    let fetched = await fetchRobots();
+    const fetchText = () =>
+      fetchFollowingRedirects(`${origin}/${path}`, 10_000, access);
+    let fetched = await fetchText();
     if (
       fetched?.response.status === 429 &&
       (await waitForRateLimit(fetched.response))
     ) {
-      fetched = await fetchRobots();
+      fetched = await fetchText();
     }
-    if (!fetched?.response.ok) return null;
-    return (await fetched.response.text()).slice(0, MAX_ROBOTS_TXT_BYTES);
+    if (!fetched) return null;
+    const { response } = fetched;
+    if (
+      !response.ok ||
+      (path === "llms.txt" &&
+        !/^text\/(?:plain|markdown|x-markdown)(?:\s*;|$)/i.test(
+          response.headers.get("content-type") ?? "",
+        ))
+    ) {
+      await response.body?.cancel();
+      return null;
+    }
+    const text = await readTextUpTo(
+      response,
+      path === "robots.txt" ? MAX_ROBOTS_TXT_BYTES : MAX_LLMS_TXT_BYTES,
+    );
+    // Soft 404s and app shells sometimes advertise plain text.
+    if (
+      path === "llms.txt" &&
+      (!text.trim() || /^\s*(?:<!doctype\s+html|<html(?:\s|>))/i.test(text))
+    ) {
+      return null;
+    }
+    return text;
   } catch (error) {
-    console.warn("Failed to fetch robots.txt:", error);
+    console.warn(`Failed to fetch ${path}:`, error);
     return null;
   }
 }
@@ -122,7 +170,8 @@ export function parseRobotsTxt(
   const robots = robotsParser(`${origin}/robots.txt`, text);
   return {
     // Our UA so an `OpenSEO-Audit` group wins over `*`.
-    isAllowed: (url: string) => robots.isAllowed(url, CRAWL_USER_AGENT) ?? true,
+    isAllowed: (url: string, userAgent = CRAWL_USER_AGENT) =>
+      robots.isAllowed(url, userAgent) ?? true,
     sitemapUrls: robots.getSitemaps(),
   };
 }
@@ -274,10 +323,45 @@ export async function discoverUrls(
   origin: string,
   maxPages = 50,
   access?: CrawlerAccess | null,
-): Promise<{ urls: string[]; robotsText: string | null }> {
+): Promise<{
+  urls: string[];
+  robotsText: string | null;
+  issues: DetectedIssue[];
+}> {
   const waitForRateLimit = createRateLimitWait();
-  const robotsText = await fetchRobotsTxtText(origin, access, waitForRateLimit);
+  const robotsText = await fetchDiscoveryText(
+    origin,
+    "robots.txt",
+    access,
+    waitForRateLimit,
+  );
   const robots = parseRobotsTxt(origin, robotsText);
+  const homepage = `${origin}/`;
+  const issues: DetectedIssue[] = [];
+  for (const { issueType, bots } of AI_BOT_GROUPS) {
+    const blockedBots = bots.filter((bot) => !robots.isAllowed(homepage, bot));
+    if (blockedBots.length > 0) {
+      issues.push({
+        issueType,
+        pageId: null,
+        pageUrl: homepage,
+        details: { blockedBots },
+      });
+    }
+  }
+  const llmsText = await fetchDiscoveryText(
+    origin,
+    "llms.txt",
+    access,
+    waitForRateLimit,
+  );
+  if (llmsText === null) {
+    issues.push({
+      issueType: "llms-txt-unavailable",
+      pageId: null,
+      pageUrl: `${origin}/llms.txt`,
+    });
+  }
 
   // Collect sitemap URLs: from robots.txt + default location
   const sitemapSources = new Set(robots.sitemapUrls);
@@ -368,5 +452,6 @@ export async function discoverUrls(
   return {
     urls: Array.from(allUrls),
     robotsText,
+    issues,
   };
 }

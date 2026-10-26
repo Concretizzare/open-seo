@@ -178,6 +178,12 @@ describe("crawlPage", () => {
         },
       ],
       hasStructuredData: true,
+      structuredDataIssues: [
+        {
+          issueType: "json-ld-missing-type",
+          details: { block: 1, object: 1 },
+        },
+      ],
       hreflangTags: ["en"],
       isIndexable: false,
       crawlDepth: 2,

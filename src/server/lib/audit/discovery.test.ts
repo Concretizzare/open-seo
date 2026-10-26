@@ -27,6 +27,9 @@ describe("discoverUrls", () => {
         if (url.endsWith("/robots.txt")) {
           return Promise.resolve(new Response("User-agent: *\nAllow: /"));
         }
+        if (url.endsWith("/llms.txt")) {
+          return Promise.resolve(new Response("# Example"));
+        }
         sitemapFetches += 1;
         return Promise.resolve(
           sitemapFetches === 1
@@ -76,6 +79,135 @@ describe("discoverUrls", () => {
 
     expect(urls).toContain("https://example.com/");
   });
+
+  it.each([
+    [
+      "explicit bot rules",
+      [
+        "User-agent: OAI-SearchBot",
+        "User-agent: ChatGPT-User",
+        "User-agent: Claude-SearchBot",
+        "User-agent: Claude-User",
+        "User-agent: PerplexityBot",
+        "User-agent: Perplexity-User",
+        "User-agent: GPTBot",
+        "User-agent: ClaudeBot",
+        "User-agent: Google-Extended",
+        "User-agent: Applebot-Extended",
+        "User-agent: CCBot",
+        "Disallow: /",
+      ].join("\n"),
+      [
+        "OAI-SearchBot",
+        "ChatGPT-User",
+        "Claude-SearchBot",
+        "Claude-User",
+        "PerplexityBot",
+        "Perplexity-User",
+      ],
+      ["GPTBot", "ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot"],
+    ],
+    [
+      "wildcard rules with bot-specific exceptions",
+      "User-agent: *\nDisallow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n\nUser-agent: GPTBot\nDisallow: /private/",
+      [
+        "ChatGPT-User",
+        "Claude-SearchBot",
+        "Claude-User",
+        "PerplexityBot",
+        "Perplexity-User",
+      ],
+      ["ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot"],
+    ],
+    ["private paths only", "User-agent: *\nDisallow: /private/", [], []],
+    ["unavailable robots.txt", null, [], []],
+  ])(
+    "groups AI homepage restrictions from %s",
+    async (_label, robotsText, searchBots, trainingBots) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) =>
+          Promise.resolve(
+            url.endsWith("/robots.txt")
+              ? new Response(robotsText, {
+                  status: robotsText === null ? 404 : 200,
+                })
+              : url.endsWith("/llms.txt")
+                ? new Response("# Example")
+                : new Response(sitemapXml([])),
+          ),
+        ),
+      );
+
+      const { issues } = await discoverUrls("https://example.com");
+
+      expect(issues).toEqual([
+        ...(searchBots.length
+          ? [
+              {
+                issueType: "ai-search-bots-blocked",
+                pageId: null,
+                pageUrl: "https://example.com/",
+                details: { blockedBots: searchBots },
+              },
+            ]
+          : []),
+        ...(trainingBots.length
+          ? [
+              {
+                issueType: "ai-training-bots-blocked",
+                pageId: null,
+                pageUrl: "https://example.com/",
+                details: { blockedBots: trainingBots },
+              },
+            ]
+          : []),
+      ]);
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([url]) => typeof url === "string" && url.endsWith("/robots.txt"),
+          ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    [200, "text/plain", "# Example\nUseful pages", false],
+    [201, "text/markdown; charset=utf-8", "# Example", false],
+    [204, "text/plain", null, true],
+    [404, "text/plain", "Missing", true],
+    [200, "text/plain", " \n ", true],
+    [200, "text/html", "<html>App shell</html>", true],
+    [200, "text/plain", "<!doctype html><html>Soft 404</html>", true],
+    [200, "application/json", "{}", true],
+  ])(
+    "checks llms.txt status=%s type=%s body=%j",
+    async (status, contentType, body, unavailable) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) =>
+          Promise.resolve(
+            url.endsWith("/llms.txt")
+              ? new Response(body, {
+                  status,
+                  headers: { "content-type": contentType },
+                })
+              : url.endsWith("/robots.txt")
+                ? new Response("")
+                : new Response(sitemapXml([])),
+          ),
+        ),
+      );
+
+      const { issues } = await discoverUrls("https://example.com");
+
+      expect(
+        issues.some((issue) => issue.issueType === "llms-txt-unavailable"),
+      ).toBe(unavailable);
+    },
+  );
 });
 
 describe("parseRobotsTxt", () => {
