@@ -12,6 +12,7 @@ const FEATURE_SHORT_LABELS: Record<string, string> = {
   featured_snippet: "FS",
   people_also_ask: "PAA",
   ai_overview: "AI",
+  ai_overview_citation: "AI cited",
   local_pack: "Local",
   knowledge_panel: "KP",
   video: "Video",
@@ -25,6 +26,7 @@ const FEATURE_TOOLTIPS: Record<string, string> = {
     "Featured Snippet — highlighted answer box at top of results",
   people_also_ask: "People Also Ask — expandable related questions",
   ai_overview: "AI Overview — AI-generated summary at top of search",
+  ai_overview_citation: "AI Overview cites your site as a source",
   local_pack: "Local Pack — map with local business listings",
   knowledge_panel: "Knowledge Panel — info box about an entity",
   video: "Video — video results shown in the SERP",
@@ -46,7 +48,7 @@ export function SerpFeatureTags({ features }: { features: string[] }) {
           className="cursor-help"
           title={FEATURE_TOOLTIPS[f] ?? f}
         >
-          {f === "ai_overview" && <Sparkles />}
+          {f.startsWith("ai_overview") && <Sparkles />}
           {FEATURE_SHORT_LABELS[f]}
         </Badge>
       ))}

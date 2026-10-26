@@ -48,6 +48,16 @@ function stopCrawlOnTarget(targetDomain: string) {
   };
 }
 
+const aiOverviewReferencesSchema = z.array(
+  z.object({ domain: z.string().nullish() }),
+);
+const aiOverviewSchema = z.object({
+  references: aiOverviewReferencesSchema.nullish(),
+  items: z
+    .array(z.object({ references: aiOverviewReferencesSchema.nullish() }))
+    .nullish(),
+});
+
 // Kept as a hand-written schema: the SDK's BaseSerpApiElementItem type omits
 // etv / estimated_paid_traffic_cost / backlinks_info / rank_changes, which we
 // rely on. The fields survive deserialization (the SDK copies unknown keys), so
@@ -139,10 +149,22 @@ function buildRankCheckResult(
   items: SerpLiveItem[],
 ): RankCheckResult {
   const target = input.targetDomain.toLowerCase();
-  const organicMatch = items.find((item) => {
-    if (item.type !== "organic" || item.domain == null) return false;
-    const domain = item.domain.toLowerCase();
-    return domain === target || domain.endsWith(`.${target}`);
+  const isTarget = (domain: string | null | undefined) => {
+    if (domain == null) return false;
+    const lower = domain.toLowerCase();
+    return lower === target || lower.endsWith(`.${target}`);
+  };
+  const organicMatch = items.find(
+    (item) => item.type === "organic" && isTarget(item.domain),
+  );
+  const citedInAiOverview = items.some((item) => {
+    if (item.type !== "ai_overview") return false;
+    const overview = aiOverviewSchema.safeParse(item);
+    if (!overview.success) return false;
+    return [
+      ...(overview.data.references ?? []),
+      ...(overview.data.items ?? []).flatMap((part) => part.references ?? []),
+    ].some((reference) => isTarget(reference.domain));
   });
 
   return {
@@ -155,7 +177,14 @@ function buildRankCheckResult(
       ? (organicMatch.rank_group ?? organicMatch.rank_absolute ?? null)
       : null,
     url: organicMatch?.url ?? null,
-    serpFeatures: [...new Set(items.map((item) => item.type).filter(Boolean))],
+    serpFeatures: [
+      ...new Set(items.map((item) => item.type).filter(Boolean)),
+      // Not a Google item type: marks that the AI Overview cites the target,
+      // so it is stored, shown, and exported with the SERP features. An
+      // overview Google loads after the page is not fetched (that doubles the
+      // check's cost); Prompt Tracking's AI Overviews engine loads it.
+      ...(citedInAiOverview ? ["ai_overview_citation"] : []),
+    ],
   };
 }
 
