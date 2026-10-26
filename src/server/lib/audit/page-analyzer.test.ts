@@ -13,7 +13,10 @@ import type { PageAnalysis, PageLink } from "@/server/lib/audit/types";
  * The previous cheerio implementation (minus passthrough fields), plus
  * separators around block elements so minified markup keeps word boundaries.
  */
-function analyzeHtmlWithCheerio(html: string, pageUrl: string): PageAnalysis {
+function analyzeHtmlWithCheerio(
+  html: string,
+  pageUrl: string,
+): Omit<PageAnalysis, "structuredDataIssues"> {
   const $ = cheerio.load(html);
 
   const title = $("title").first().text().trim();
@@ -121,7 +124,11 @@ const PAGE_URL = "https://example.com/blog/post";
 function expectParity(html: string) {
   const streamed = analyzeHtml(html, PAGE_URL, 200, 0);
   const reference = analyzeHtmlWithCheerio(html, PAGE_URL);
-  const { javascriptShell: _javascriptShell, ...existingAnalysis } = streamed;
+  const {
+    javascriptShell: _javascriptShell,
+    structuredDataIssues: _structuredDataIssues,
+    ...existingAnalysis
+  } = streamed;
   expect(existingAnalysis).toEqual(reference);
 }
 
@@ -279,6 +286,115 @@ describe("analyzeHtml extraction caps", () => {
     );
     expect(analysis.links).toHaveLength(1_000);
     expect(analysis.images).toHaveLength(1_000);
+  });
+});
+
+describe("analyzeHtml JSON-LD", () => {
+  const analyze = (...blocks: string[]) =>
+    analyzeHtml(
+      blocks
+        .map((text) => `<script type="application/ld+json">${text}</script>`)
+        .join(""),
+      PAGE_URL,
+      200,
+      0,
+    );
+
+  it("reports each invalid block while preserving presence and visible text", () => {
+    const analysis = analyze("{", '{"@type":"WebPage"}', "");
+    expect(analysis.hasStructuredData).toBe(true);
+    expect(analysis.bodyText).toBe("");
+    expect(analysis.structuredDataIssues).toEqual([
+      { issueType: "invalid-json-ld", details: { block: 1 } },
+      { issueType: "invalid-json-ld", details: { block: 3 } },
+    ]);
+  });
+
+  it("flags untyped document nodes, excluding graph containers and property values", () => {
+    expect(
+      analyze(
+        JSON.stringify({
+          "@graph": [
+            { name: "Untyped" },
+            { "@type": [], name: "Also untyped" },
+            { "@type": "WebPage", author: { "@id": "#author" } },
+          ],
+        }),
+      ).structuredDataIssues,
+    ).toEqual([
+      { issueType: "json-ld-missing-type", details: { block: 1, object: 2 } },
+      { issueType: "json-ld-missing-type", details: { block: 1, object: 3 } },
+    ]);
+  });
+
+  it.each([
+    ["LocalBusiness", ["name", "address"]],
+    ["Product", ["name", "offers/review/aggregateRating"]],
+    ["FAQPage", ["mainEntity"]],
+    ["BreadcrumbList", ["itemListElement"]],
+    ["Event", ["name", "startDate", "location"]],
+    ["Recipe", ["name", "image"]],
+  ])("checks basic required properties for %s", (type, missingProperties) => {
+    expect(
+      analyze(JSON.stringify({ "@type": type })).structuredDataIssues,
+    ).toEqual([
+      {
+        issueType: "json-ld-missing-required-properties",
+        details: { block: 1, object: 1, type, missingProperties },
+      },
+    ]);
+  });
+
+  it("checks @graph and top-level arrays, all @types, and Product alternatives", () => {
+    const analysis = analyze(
+      JSON.stringify([
+        {
+          "@context": "https://schema.org",
+          "@graph": [
+            { "@type": ["WebPage", "FAQPage"], mainEntity: " " },
+            { "@type": ["Thing", "LocalBusiness"], name: "A", address: "B" },
+          ],
+        },
+        { "@type": "Product", name: "One", offers: { price: 10 } },
+        { "@type": "Product", name: "Two", review: { "@id": "#review" } },
+        {
+          "@type": "Product",
+          name: "Three",
+          aggregateRating: { ratingValue: 5 },
+        },
+        { "@type": "Product", name: "Four", offers: null, review: [] },
+        { "@type": "Recipe", name: "Soup", image: [] },
+      ]),
+    );
+    expect(
+      analysis.structuredDataIssues.map((issue) => ({
+        type: issue.details.type,
+        missing: issue.details.missingProperties,
+      })),
+    ).toEqual([
+      { type: "FAQPage", missing: ["mainEntity"] },
+      { type: "Product", missing: ["offers/review/aggregateRating"] },
+      { type: "Recipe", missing: ["image"] },
+    ]);
+  });
+
+  it("bounds block sizes, block count, and node traversal without false JSON errors", () => {
+    const analysis = analyze(
+      "x".repeat(100_001),
+      JSON.stringify(Array.from({ length: 1_000 }, () => ({}))),
+      ...Array.from({ length: 30 }, () => "{"),
+    );
+    expect(analysis.hasStructuredData).toBe(true);
+    expect(
+      analysis.structuredDataIssues.filter(
+        (issue) => issue.issueType === "json-ld-missing-type",
+      ).length,
+    ).toBeLessThanOrEqual(200);
+    expect(
+      analysis.structuredDataIssues
+        .filter((issue) => issue.issueType === "invalid-json-ld")
+        .map((issue) => issue.details.block),
+    ).toEqual(Array.from({ length: 18 }, (_, index) => index + 3));
   });
 });
 

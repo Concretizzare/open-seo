@@ -58,6 +58,19 @@ export interface PageLink {
   isNofollow: boolean;
 }
 
+interface StructuredDataIssue {
+  issueType:
+    | "invalid-json-ld"
+    | "json-ld-missing-type"
+    | "json-ld-missing-required-properties";
+  details: {
+    block: number;
+    object?: number;
+    type?: string;
+    missingProperties?: string[];
+  };
+}
+
 /** Data extracted from a single page's HTML. */
 export interface PageAnalysis {
   url: string;
@@ -92,6 +105,7 @@ export interface PageAnalysis {
 
   // Structured data
   hasStructuredData: boolean;
+  structuredDataIssues: StructuredDataIssue[];
 
   // Hreflang
   hreflangTags: string[];
@@ -169,6 +183,8 @@ export interface CrawledPageResult {
   images: Array<{ src: string | null; alt: string | null }>;
   links: PageLink[];
   hasStructuredData: boolean;
+  /** Transient validation results; persisted through the per-page reporter. */
+  structuredDataIssues?: StructuredDataIssue[];
   hreflangTags: string[];
   isIndexable: boolean;
   responseTimeMs: number;

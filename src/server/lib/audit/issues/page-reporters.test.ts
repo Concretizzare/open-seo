@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runPageReporters } from "@/server/lib/audit/issues/page-reporters";
+import { analyzeHtml } from "@/server/lib/audit/page-analyzer";
 import {
   findDuplicates,
   findRedirectChainsAndLoops,
@@ -91,6 +92,34 @@ describe("runPageReporters", () => {
 
   it("reports nothing for a healthy page", () => {
     expect(issueTypes(makePage({}))).toEqual([]);
+  });
+
+  it("reports parsed JSON-LD findings with distinct retry-safe keys, even on app shells", () => {
+    const analysis = analyzeHtml(
+      '<script type="application/ld+json">{</script>'.repeat(2),
+      "https://example.com/a",
+      200,
+      0,
+    );
+    const issues = runPageReporters(
+      makePage({ ...analysis, javascriptShell: true }),
+    ).filter((issue) => issue.issueType === "invalid-json-ld");
+    expect(issues).toEqual([
+      {
+        issueType: "invalid-json-ld",
+        pageId: "page-1",
+        pageUrl: "https://example.com/a",
+        details: { block: 1 },
+        dedupeKey: "0",
+      },
+      {
+        issueType: "invalid-json-ld",
+        pageId: "page-1",
+        pageUrl: "https://example.com/a",
+        details: { block: 2 },
+        dedupeKey: "1",
+      },
+    ]);
   });
 
   // A fetch that never produced a page yields exactly its fetch issue, and

@@ -16,6 +16,54 @@ interface AuditIssueDescriptor {
 }
 
 export const AUDIT_ISSUE_TYPES = {
+  "ai-search-bots-blocked": {
+    severity: "warning",
+    title: "AI search crawlers blocked",
+    explanation:
+      "robots.txt disallows the homepage for the listed AI search or answer retrieval crawlers. This prevents those crawlers from retrieving the page for AI answers.",
+    howToFix:
+      "If you want these services to retrieve your homepage for AI answers, allow the listed crawlers in robots.txt. Review search and retrieval rules separately from training rules.",
+  },
+  "ai-training-bots-blocked": {
+    severity: "info",
+    title: "AI training crawlers blocked",
+    explanation:
+      "robots.txt disallows the homepage for the listed AI training crawlers. Blocking training is a legitimate business choice and does not by itself mean AI search crawlers are blocked.",
+    howToFix:
+      "Review the listed crawlers against your content licensing and training preferences. Keep these rules if the restriction is intentional; no action is required.",
+  },
+  "llms-txt-unavailable": {
+    severity: "info",
+    title: "llms.txt unavailable",
+    explanation:
+      "The audit could not read a non-empty text file at /llms.txt. llms.txt is a proposal for describing a site's content to AI systems; its impact on AI visibility is unproven.",
+    howToFix:
+      "Optionally publish a concise Markdown overview at /llms.txt with links to useful pages. Its impact on AI visibility is unproven, so no action is required.",
+  },
+  "invalid-json-ld": {
+    severity: "critical",
+    title: "Invalid JSON-LD",
+    explanation:
+      "An application/ld+json script block contains invalid JSON. Consumers cannot reliably read structured data from that block.",
+    howToFix:
+      "Fix the JSON syntax in the listed script block, including quotes, commas, and brackets. Validate the result with a JSON parser and Google's Rich Results Test.",
+  },
+  "json-ld-missing-type": {
+    severity: "warning",
+    title: "JSON-LD object missing @type",
+    explanation:
+      "A JSON-LD object has no @type identifying the entity it describes. Consumers may be unable to interpret it as the intended structured data type.",
+    howToFix:
+      "Add the appropriate schema.org @type to the listed object. A container that only groups nodes under @graph does not need its own @type.",
+  },
+  "json-ld-missing-required-properties": {
+    severity: "warning",
+    title: "JSON-LD missing required properties",
+    explanation:
+      "A common structured data type is missing properties checked by this audit. These are basic checks for selected types, not a complete rich-result eligibility assessment or a guarantee of AI visibility.",
+    howToFix:
+      "Add the listed properties with values that match visible page content. For Product, include at least one of offers, review, or aggregateRating. Check Google's current requirements and validate with the Rich Results Test.",
+  },
   "blocked-page": {
     severity: "critical",
     title: "Crawler was blocked",

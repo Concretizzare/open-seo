@@ -132,6 +132,7 @@ async function runDiscoveryPhase(
   // shape would leave the scratchpad empty and finalize a zero-page audit.
   return pgStep(step, "discover-urls-v2", DISCOVERY_STEP, async () => {
     const result = await discoverUrls(origin, maxPages, access);
+    await AuditRepository.insertIssues(auditId, result.issues);
     const robots = parseRobotsTxt(origin, result.robotsText);
     const scratchpad = getAuditScratchpad(auditId);
 
