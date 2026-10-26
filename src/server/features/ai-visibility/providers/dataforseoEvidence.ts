@@ -10,7 +10,7 @@ const resultSchema = z.object({
   // ChatGPT and Gemini LLM Scraper fields.
   markdown: optionalMarkdown,
   sources: sourceList,
-  // Google organic SERP field.
+  // Google organic and AI Mode SERP field.
   items: z.array(z.unknown()).max(500).nullish(),
 });
 const aiOverviewSchema = z.object({
@@ -64,7 +64,8 @@ export function parseDataforseoAnswer(
   const result = parsed.data;
   let markdown: string | null;
   let sources: unknown[];
-  if (engine === "google_ai_overview") {
+  // An AI Mode SERP holds its answer in the same ai_overview item.
+  if (engine === "google_ai_overview" || engine === "google_ai_mode") {
     const overview = result.items
       ?.map((item) => aiOverviewSchema.safeParse(item))
       .find((item) => item.success)?.data;
