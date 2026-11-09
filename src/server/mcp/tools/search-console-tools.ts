@@ -12,7 +12,7 @@ import {
   type McpTableColumn,
 } from "@/server/mcp/table";
 import { projectIdSchema } from "@/server/mcp/schemas";
-import { buildDashboardUrl } from "@/server/mcp/urls";
+import { buildConnectGscUrl } from "@/server/mcp/urls";
 import { getGoogleAccessMode } from "@/server/features/google/googleAccess";
 import { hasGoogleOAuthConfig } from "@/server/features/google/oauth-config";
 import { GscService } from "@/server/features/gsc/services/GscService";
@@ -54,12 +54,6 @@ type ProjectAuthContext = {
   baseUrl: string;
 };
 
-function connectGscUrl(baseUrl: string, projectId: string): string {
-  // GSC Insights hosts the connection card AND the data the user came for,
-  // so land them there rather than in settings.
-  return buildDashboardUrl(baseUrl, `/p/${projectId}/search-performance`);
-}
-
 /** Self-hosted GSC requires the operator to provide a Google OAuth client and
  *  BETTER_AUTH_SECRET. Return this setup nudge before attempting a token lookup
  *  when either is missing. */
@@ -71,7 +65,7 @@ async function missingSelfHostedGoogleClientResponse(
 
   if ((await getGoogleAccessMode()) === "gateway") {
     return mcpResponse({
-      text: "Google isn't set up in Every App yet. An owner or admin adds it once: create a Google OAuth client with the redirect URI https://<your gateway>/connect/google-workspace/callback, then paste it in Every App under Manage workspace → Providers, or run `pnpm everyapp secret set GOOGLE_WORKSPACE_CLIENT_ID GOOGLE_WORKSPACE_CLIENT_SECRET` (guide: https://everyapp.com/docs/connect-oauth). Then connect Search Console from the project's settings page.",
+      text: "Google isn't set up in Every App yet. An owner or admin adds it once: create a Google OAuth client with the redirect URI https://<your gateway>/connect/google-workspace/callback, then paste it in Every App under Manage workspace → Providers, or run `pnpm everyapp secret set GOOGLE_WORKSPACE_CLIENT_ID GOOGLE_WORKSPACE_CLIENT_SECRET` (guide: https://everyapp.com/docs/providers/google#connect-accounts). Then connect Search Console from the project's settings page.",
       meta: buildProjectMeta(context, projectId),
       structuredContent: {
         ok: false,
@@ -272,7 +266,11 @@ export const getSearchConsolePerformanceTool = {
     );
     if (blocked) return blocked;
 
-    const connectUrl = connectGscUrl(context.baseUrl, args.projectId);
+    const connectUrl = buildConnectGscUrl(
+      context.baseUrl,
+      args.projectId,
+      Boolean(context.auth.guestClaimToken),
+    );
     const meta = buildProjectMeta(
       context,
       args.projectId,
@@ -519,7 +517,11 @@ export const inspectUrlsTool = {
     );
     if (blocked) return blocked;
 
-    const connectUrl = connectGscUrl(context.baseUrl, args.projectId);
+    const connectUrl = buildConnectGscUrl(
+      context.baseUrl,
+      args.projectId,
+      Boolean(context.auth.guestClaimToken),
+    );
     const meta = buildProjectMeta(
       context,
       args.projectId,

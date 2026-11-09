@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- every site audit phase is kept in this one module */
 import type { WorkflowStep } from "cloudflare:workers";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { discoverUrls, parseRobotsTxt } from "@/server/lib/audit/discovery";
@@ -54,6 +55,8 @@ type AuditPhasesParams = {
   config: AuditConfig;
   access?: CrawlerAccess | null;
   renderUsage: RenderUsage;
+  /** A metered rendered audit's credit hold, which the crawl must stay in. */
+  renderHold?: { deadlineAt: number; credits: number };
 };
 
 export async function runAuditPhases(
@@ -379,9 +382,9 @@ async function finalizeAudit(args: {
       issueCount: linkIssues.length,
     });
     issues.push(...linkIssues);
-    if (crawl.rateLimited) {
+    if (crawl.stoppedBy) {
       issues.push({
-        issueType: "crawl-rate-limited",
+        issueType: crawl.stoppedBy,
         pageId: null,
         pageUrl: startUrl,
       });

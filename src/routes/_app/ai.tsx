@@ -18,7 +18,7 @@ import {
   CardTitle,
 } from "@/client/components/ui/card";
 import { PageHeader } from "@/client/components/PageHeader";
-import { ArrowUpRight, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, Info } from "lucide-react";
 import { getClientAuthMode } from "@/lib/auth-mode";
 import { captureClientEvent } from "@/client/lib/posthog";
 import {
@@ -27,6 +27,7 @@ import {
 } from "@/client/features/ai-mcp/agentSetupPrompt";
 import { CopyButton } from "@/client/components/CopyButton";
 import { AgentList } from "@/client/features/ai-mcp/AgentList";
+import { pageHead } from "@/client/lib/pageHead";
 
 const DOCS_URL = "https://openseo.so/docs/agent-setup";
 
@@ -71,6 +72,7 @@ const aiSearchSchema = z.object({
 });
 
 export const Route = createFileRoute("/_app/ai")({
+  head: () => pageHead("Agent setup"),
   validateSearch: aiSearchSchema,
   component: AiPage,
 });
@@ -199,14 +201,15 @@ function AiPage() {
                 </div>
 
                 {getClientAuthMode() === "cloudflare_access" ? (
-                  <Alert variant="warning" className="mt-8">
-                    <ShieldAlert />
+                  <Alert className="mt-8">
+                    <Info />
                     <AlertDescription>
-                      This instance is behind Cloudflare Access. MCP clients
-                      cannot connect until Managed OAuth is enabled on your
-                      Access application.{" "}
+                      This instance is behind Cloudflare Access, so MCP clients
+                      connect through Managed OAuth on your Access application.
+                      If a client gets a login page instead of connecting, check
+                      that Managed OAuth is on.{" "}
                       <a
-                        href="https://openseo.so/docs/self-hosting/cloudflare#connect-the-mcp-server-through-cloudflare-access"
+                        href="https://github.com/every-app/open-seo/blob/main/docs/SELF_HOSTING_CLOUDFLARE_OPERATIONS.md#through-cloudflare-access"
                         target="_blank"
                         rel="noreferrer"
                         className="font-medium"

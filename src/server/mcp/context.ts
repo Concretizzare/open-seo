@@ -27,6 +27,10 @@ export type ToolAuthContext = {
   // on the MCP path; absent on hand-built contexts (SAM), which name
   // themselves at the tool instead.
   clientLabel?: string;
+  // Set only for a guest account that nobody has claimed yet
+  // (src/server/auth/guest-accounts.ts). Tools read it as "this is a guest";
+  // the value is the claim cookie's secret and never goes in a response.
+  guestClaimToken?: string;
 };
 
 export type ToolContext = {
@@ -61,6 +65,8 @@ const applicationAuthContextSchema = z.object({
   // visible on a later tools/call, and this transport never populates
   // ServerContext.http.req.
   userAgent: z.string().optional(),
+  // Baked into a guest account's grant when it is created; see ToolAuthContext.
+  guestClaimToken: z.string().min(1).optional(),
 });
 
 type ApplicationAuthContext = z.infer<typeof applicationAuthContextSchema>;

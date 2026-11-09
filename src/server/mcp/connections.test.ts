@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { McpConnectionsService } from "./connections";
 
 const helpers = vi.hoisted(() => ({
@@ -7,16 +7,25 @@ const helpers = vi.hoisted(() => ({
   revokeGrant: vi.fn(),
 }));
 
+const listClaimedGuestUserIds = vi.hoisted(() => vi.fn());
+
 vi.mock("@/server/mcp/oauth-provider", () => ({
   getCapturedOAuthHelpers: () => helpers,
 }));
+vi.mock("@/server/auth/repositories/GuestAccountRepository", () => ({
+  GuestAccountRepository: { listClaimedGuestUserIds },
+}));
 
-it("lists grants newest first with the client name and bound organization", async () => {
+beforeEach(() => {
+  listClaimedGuestUserIds.mockResolvedValue([]);
+});
+
+it("lists grants newest first with the client name, chat app and bound organization", async () => {
   helpers.listUserGrants.mockResolvedValue({
     items: [
       {
         id: "grant-old",
-        clientId: "codex",
+        clientId: "claude",
         metadata: { organizationId: "org-1" },
         createdAt: 1_700_000_000,
       },
@@ -29,7 +38,14 @@ it("lists grants newest first with the client name and bound organization", asyn
     ],
   });
   helpers.lookupClient.mockImplementation((clientId: string) =>
-    Promise.resolve(clientId === "codex" ? { clientName: "Codex" } : null),
+    Promise.resolve(
+      clientId === "claude"
+        ? {
+            clientName: "Claude",
+            redirectUris: ["https://claude.ai/api/mcp/auth_callback"],
+          }
+        : null,
+    ),
   );
 
   await expect(
@@ -38,14 +54,36 @@ it("lists grants newest first with the client name and bound organization", asyn
     {
       id: "grant-new",
       clientName: "MCP client",
+      webChat: null,
       createdAt: 1_700_000_100_000,
       organizationId: null,
     },
     {
       id: "grant-old",
-      clientName: "Codex",
+      clientName: "Claude",
+      webChat: "claude",
       createdAt: 1_700_000_000_000,
       organizationId: "org-1",
     },
   ]);
+});
+
+it("lists and revokes the agent connections of guests the user claimed", async () => {
+  listClaimedGuestUserIds.mockResolvedValue(["guest-1"]);
+  helpers.listUserGrants.mockImplementation((ownerId: string) =>
+    Promise.resolve({
+      items:
+        ownerId === "guest-1"
+          ? [{ id: "grant-guest", clientId: "chatgpt", createdAt: 1 }]
+          : [],
+    }),
+  );
+  helpers.lookupClient.mockResolvedValue(null);
+
+  await expect(
+    McpConnectionsService.listMcpConnections("user-1"),
+  ).resolves.toMatchObject([{ id: "grant-guest" }]);
+
+  await McpConnectionsService.revokeMcpConnection("user-1", "grant-guest");
+  expect(helpers.revokeGrant).toHaveBeenCalledWith("grant-guest", "guest-1");
 });

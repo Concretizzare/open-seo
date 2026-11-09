@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageLoading } from "@/client/components/Spinner";
 import { useAppForm } from "@/client/components/form/useAppForm";
 import { Button } from "@/client/components/ui/button";
@@ -30,6 +30,7 @@ import {
   toAuthCallbackURL,
 } from "@/lib/auth-redirect";
 import { z } from "zod";
+import { pageHead } from "@/client/lib/pageHead";
 
 const UTM_PARAMS = [
   "utm_source",
@@ -50,6 +51,7 @@ const signUpSchema = z
   });
 
 export const Route = createFileRoute("/_auth/sign-up")({
+  head: () => pageHead("Sign up"),
   validateSearch: authRedirectSearchSchema.extend({
     // A site checked with the marketing site's free tool; onboarding
     // prefills it, and the website step validates it on save.
@@ -61,6 +63,9 @@ export const Route = createFileRoute("/_auth/sign-up")({
     utm_medium: z.string().optional().catch(undefined),
     utm_campaign: z.string().optional().catch(undefined),
     utm_content: z.string().optional().catch(undefined),
+    // The method a visitor already picked on the marketing site's ad landing
+    // page, so they don't have to pick it again here.
+    method: z.enum(["google", "email"]).optional().catch(undefined),
   }),
   component: SignUpPage,
 });
@@ -83,8 +88,25 @@ function SignUpPage() {
       : onboardingSearch.size > 0
         ? `/onboarding?${onboardingSearch.toString()}`
         : "/onboarding";
-  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [showEmailForm, setShowEmailForm] = useState(search.method === "email");
   const google = useGoogleAuth({ redirectTo, postSignupRedirect });
+
+  // Sent from a "Continue with Google" button: go straight to Google. `method`
+  // leaves the URL first, so Back from Google's page shows the buttons here
+  // instead of opening Google again.
+  const startedGoogle = useRef(false);
+  useEffect(() => {
+    if (search.method !== "google" || !isHostedMode || startedGoogle.current) {
+      return;
+    }
+    startedGoogle.current = true;
+    void navigate({
+      to: "/sign-up",
+      search: { ...search, method: undefined },
+      replace: true,
+    });
+    void google.start();
+  }, [google, isHostedMode, navigate, search]);
   // The standalone Docker edition: no Google, no email verification, and the
   // server accepts a sign-up only for the first account or an invited address
   // (src/server/standalone/sign-up.ts).

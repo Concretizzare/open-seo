@@ -120,16 +120,6 @@ describe("rendered audit start", () => {
     );
   });
 
-  it("refuses more than 1,000 rendered pages on a paid plan before holding credits", async () => {
-    const error = await AuditService.startAudit({
-      ...renderedAudit,
-      maxPages: 1_001,
-    }).catch((reason: unknown) => reason);
-    expect(error).toMatchObject({ code: "AUDIT_PAGE_LIMIT_EXCEEDED" });
-    expect(String(error)).toContain("limited to 1,000 pages");
-    expect(mocks.lock).not.toHaveBeenCalled();
-  });
-
   it("does not start an audit the organization cannot cover", async () => {
     mocks.lock.mockRejectedValue(new AppError("INSUFFICIENT_CREDITS"));
     await expect(AuditService.startAudit(renderedAudit)).rejects.toMatchObject({

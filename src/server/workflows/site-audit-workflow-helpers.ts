@@ -20,7 +20,9 @@ function parseLinkHeaderCanonical(
     const match = part.match(/<([^>]+)>\s*;([^]*)/);
     if (!match) continue;
     if (/rel\s*=\s*"?canonical"?/i.test(match[2])) {
-      return normalizeUrl(match[1].trim(), pageUrl);
+      return normalizeUrl(match[1].trim(), pageUrl, {
+        keepTrackingParams: true,
+      });
     }
   }
   return null;
@@ -183,7 +185,8 @@ export async function crawlPage(
     );
 
     // Rendering replaces the body of a readable HTML page, a bot challenge, or
-    // a throttled Shopify page with what the browser loaded. Redirects,
+    // a throttled Shopify page with what the browser loaded. A block can be
+    // any content type: a host's firewall need not answer with HTML. Redirects,
     // non-HTML files, origin errors, login walls and other rate limits keep
     // their existing paths. The direct response's timing and headers stay
     // authoritative.
@@ -192,8 +195,11 @@ export async function crawlPage(
     if (
       render &&
       (throttled ||
-        (isHtml && (challenged || (fetchClass === "ok" && statusCode < 400))))
+        challenged ||
+        (isHtml && fetchClass === "ok" && statusCode < 400))
     ) {
+      // Nothing reads a non-HTML refusal, and a render can take many seconds.
+      if (!isHtml) await response.body?.cancel();
       try {
         const page = await render(url);
         body = page.html;
@@ -261,7 +267,9 @@ export async function crawlPage(
       title: analysis.title,
       metaDescription: analysis.metaDescription,
       canonicalUrl: analysis.canonical
-        ? (normalizeUrl(analysis.canonical, url) ?? analysis.canonical)
+        ? (normalizeUrl(analysis.canonical, url, {
+            keepTrackingParams: true,
+          }) ?? analysis.canonical)
         : null,
       robotsMeta: analysis.robotsMeta,
       xRobotsTag,

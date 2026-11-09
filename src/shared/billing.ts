@@ -17,12 +17,47 @@ export type PlanStatus = "free" | "paid";
 export const AUTUMN_PAID_PLAN_ID = "base-plan";
 // YC deal: same entitlements as the base plan with $50 of monthly credits.
 export const AUTUMN_YC_PLAN_ID = "yc-plan";
+// Base Plan entitlements with 20% more monthly credits than the price.
+export const AUTUMN_PRO_PLAN_ID = "pro-plan";
+export const AUTUMN_AGENCY_PLAN_ID = "agency-plan";
 /** The plans the app sells through checkout. */
 export const CHECKOUT_PLAN_IDS = [
   AUTUMN_PAID_PLAN_ID,
   AUTUMN_YC_PLAN_ID,
+  AUTUMN_PRO_PLAN_ID,
+  AUTUMN_AGENCY_PLAN_ID,
 ] as const;
 export type CheckoutPlanId = (typeof CHECKOUT_PLAN_IDS)[number];
+// The monthly plans by price, cheapest first. Moving up to a pricier tier is
+// self-serve. Moving down goes through support: a downgrade after spending
+// the bigger plan's credits would buy them at the smaller plan's price. The
+// YC plan is a deal, so it is a plan to upgrade from but not to.
+const MONTHLY_PLANS_BY_PRICE: readonly string[] = [
+  AUTUMN_PAID_PLAN_ID,
+  AUTUMN_PRO_PLAN_ID,
+  AUTUMN_YC_PLAN_ID,
+  AUTUMN_AGENCY_PLAN_ID,
+];
+const UPGRADE_PLAN_IDS: readonly string[] = [
+  AUTUMN_PRO_PLAN_ID,
+  AUTUMN_AGENCY_PLAN_ID,
+];
+
+/** Whether the plan is one the app can upgrade from. Annual plans and plans
+ *  granted by hand change through support. */
+export function isMonthlyPlan(planId: string | null) {
+  return planId !== null && MONTHLY_PLANS_BY_PRICE.includes(planId);
+}
+
+export function canUpgradePlan(fromPlanId: string | null, toPlanId: string) {
+  const from =
+    fromPlanId === null ? -1 : MONTHLY_PLANS_BY_PRICE.indexOf(fromPlanId);
+  return (
+    from !== -1 &&
+    UPGRADE_PLAN_IDS.includes(toPlanId) &&
+    MONTHLY_PLANS_BY_PRICE.indexOf(toPlanId) > from
+  );
+}
 export const AUTUMN_SEO_DATA_TOP_UP_PLAN_ID = "credit-top-up";
 export const AUTUMN_PAID_PLAN_FEATURE_ID = "paid_plan";
 // Granted by both the free plan (now the Autumn Default, so every non-paid

@@ -30,13 +30,24 @@ describe("getOrganizationBillingAccount", () => {
       },
       balances: {
         [AUTUMN_SEO_DATA_BALANCE_FEATURE_ID]: {
-          granted: 20000,
           remaining: 1500,
           nextResetAt: 1_790_000_000_000,
+          // Credits left from the plan before an upgrade share the balance
+          // until the refill; they are not part of the monthly grant.
+          breakdown: [
+            { planId: null, includedGrant: 7000 },
+            { planId: "friends_and_family_2", includedGrant: 20000 },
+          ],
         },
         [AUTUMN_SEO_DATA_TOPUP_BALANCE_FEATURE_ID]: { remaining: 2500 },
       },
-      subscriptions: [{ planId: "friends_and_family_2", pastDue: true }],
+      subscriptions: [
+        {
+          planId: "friends_and_family_2",
+          pastDue: true,
+          plan: { name: "Friends & Family" },
+        },
+      ],
       purchases: [],
       sendEmailReceipts: true,
     });
@@ -44,6 +55,7 @@ describe("getOrganizationBillingAccount", () => {
     await expect(getOrganizationBillingAccount(context)).resolves.toEqual({
       planStatus: "paid",
       paidPlanId: "friends_and_family_2",
+      paidPlanName: "Friends & Family",
       monthlyCreditsUsd: 20,
       monthlyRemainingUsd: 1.5,
       topUpRemainingUsd: 2.5,
@@ -59,6 +71,7 @@ describe("getOrganizationBillingAccount", () => {
     expect(getOrCreateMock).toHaveBeenCalledWith({
       customerId: "org_1",
       email: "owner@example.com",
+      expand: ["subscriptions.plan"],
     });
 
     getOrCreateMock.mockResolvedValueOnce({

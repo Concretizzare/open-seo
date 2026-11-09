@@ -37,8 +37,8 @@ export function renderUsageCredits(usage: RenderUsage): number {
 
 /**
  * Usage-credit range for rendering up to `maxPages` pages. The low end renders
- * every page on Cloudflare. The high end is every page falling back to Context
- * after its Cloudflare attempt, which is also what a hosted audit reserves.
+ * every page on Cloudflare, which is what most sites cost. The high end is
+ * every page falling back to Context after its Cloudflare attempt.
  */
 export function estimateRenderingCredits(maxPages: number) {
   return {
@@ -54,6 +54,15 @@ export function estimateRenderingCredits(maxPages: number) {
 }
 
 /**
+ * What a hosted rendered audit holds when it starts, and the most it charges:
+ * twice the Cloudflare-only estimate. Most pages render on Cloudflare, so
+ * this covers almost every audit without holding the Context worst case.
+ */
+export function renderingHoldCredits(maxPages: number) {
+  return estimateRenderingCredits(maxPages).low * 2;
+}
+
+/**
  * Usage credits as the dollars users see everywhere else. Rounded up to the
  * cent, so an account holding the shown amount always covers the hold.
  */
@@ -64,11 +73,16 @@ function formatRenderingUsd(credits: number) {
 
 /** Why a hosted account cannot start a rendered audit of `maxPages` pages. */
 export function renderingCreditsNeededText(maxPages: number) {
-  const { high } = estimateRenderingCredits(maxPages);
-  return `Rendering up to ${maxPages.toLocaleString("en-US")} pages needs ${formatRenderingUsd(high)} of credits available. Lower the page limit or add credits.`;
+  return `Rendering up to ${maxPages.toLocaleString("en-US")} pages needs ${formatRenderingUsd(renderingHoldCredits(maxPages))} of credits available. Lower the page limit or add credits.`;
+}
+
+export const RENDERING_COST_NOTE =
+  "Sites that block our browser need an advanced renderer. If the cost is higher than expected, it will stop.";
+
+export function renderingCostText(maxPages: number) {
+  return `Costs up to ${formatRenderingUsd(renderingHoldCredits(maxPages))}.`;
 }
 
 export function renderingEstimateText(maxPages: number) {
-  const { low, high } = estimateRenderingCredits(maxPages);
-  return `Estimated ${formatRenderingUsd(low)} to ${formatRenderingUsd(high)} for up to ${maxPages.toLocaleString("en-US")} pages. Sites with aggressive bot detection need our more capable renderer and cost more.`;
+  return `${renderingCostText(maxPages)} ${RENDERING_COST_NOTE}`;
 }

@@ -7,10 +7,11 @@ import {
   collectAiLiveBatch,
   collectAiModelBatch,
   collectAiRound,
-  finalizeAiRun,
+  collectLateAiAnswers,
   postAiBatch,
   prepareAiRun,
 } from "./aiVisibilityCollection";
+import { finalizeAiRun } from "./aiVisibilityRunOutcome";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
 
 const { testDb, dataforseo } = await vi.hoisted(async () => {
@@ -54,6 +55,7 @@ const market = { locationCode: 2840, languageCode: "en" };
 const pendingTask = {
   tag: "answer-0",
   taskId: "task",
+  costUsd: 0.002,
   engine: "chatgpt",
   prompt: "Which SEO tools?",
   attempts: 1,
@@ -157,11 +159,12 @@ describe("AI answer collection", () => {
   });
 
   it("fails the answers DataForSEO did not accept and collects the rest", async () => {
-    dataforseo.trackingTaskPost.mockResolvedValue([
-      { tag: "answer-0", taskId: "task" },
-    ]);
+    dataforseo.trackingTaskPost.mockResolvedValue({
+      tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0.002 }],
+      hold: null,
+    });
 
-    const pending = await postAiBatch(runId, customer, market, {
+    const { pending } = await postAiBatch(runId, customer, market, {
       engine: "chatgpt",
       tasks: [
         { tag: "answer-0", prompt: "Which SEO tools?" },
@@ -176,11 +179,12 @@ describe("AI answer collection", () => {
   });
 
   it("counts the attempt of an answer posted again, so its retries stop at 3", async () => {
-    dataforseo.trackingTaskPost.mockResolvedValue([
-      { tag: "answer-0", taskId: "task" },
-    ]);
+    dataforseo.trackingTaskPost.mockResolvedValue({
+      tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0.002 }],
+      hold: null,
+    });
 
-    const pending = await postAiBatch(runId, customer, market, {
+    const { pending } = await postAiBatch(runId, customer, market, {
       engine: "chatgpt",
       tasks: [{ tag: "answer-0", prompt: "Which SEO tools?", attempts: 2 }],
     });
@@ -414,29 +418,21 @@ describe("AI answer collection", () => {
     });
   });
 
-  it("fails answers that never arrived and finishes the run as partial", async () => {
+  it("fills in an answer that arrives after the run finished, and clears the notice", async () => {
     dataforseo.fetchTaskResult.mockResolvedValue(liveAnswer.value);
     await collectAiRound(runId, [pendingTask], true);
-
     await finalizeAiRun(runId);
 
-    expect(await repo.getRunInternal(runId)).toMatchObject({
-      status: "partial",
-    });
+    const late = { ...pendingTask, tag: "answer-1" };
+    expect(await collectLateAiAnswers(runId, [late])).toEqual([]);
+
     expect(await repo.getObservation("answer-1")).toMatchObject({
-      status: "failed",
-      error: "No answer arrived within the collection window.",
+      status: "completed",
+      error: null,
     });
-  });
-
-  it("tells the tracker the check could not collect answers when none arrived", async () => {
-    await finalizeAiRun(runId);
-
     expect(await repo.getRunInternal(runId)).toMatchObject({
-      status: "failed",
+      status: "completed",
     });
-    expect((await repo.getTracker("project"))?.lastSkipReason).toBe(
-      "The last check could not collect answers.",
-    );
+    expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
   });
 });

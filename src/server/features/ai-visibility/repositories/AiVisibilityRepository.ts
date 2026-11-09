@@ -302,6 +302,20 @@ export const AiVisibilityRepository = {
     )[0] ?? null,
   updateRun: (id: string, values: Partial<RunRow>) =>
     db.update(aiRuns).set(values).where(eq(aiRuns.id, id)),
+  /**
+   * Updates a run only while it is queued or running, and reports whether it
+   * did, so a failed run can't be restarted by a workflow that read it first.
+   */
+  updateActiveRun: async (id: string, values: Partial<RunRow>) =>
+    (
+      await db
+        .update(aiRuns)
+        .set(values)
+        .where(
+          and(eq(aiRuns.id, id), inArray(aiRuns.status, ACTIVE_RUN_STATUSES)),
+        )
+        .returning({ id: aiRuns.id })
+    ).length > 0,
   getObservations,
   getObservation,
   listAnsweredPromptIds,
@@ -311,6 +325,7 @@ export const AiVisibilityRepository = {
           .select({
             runId: aiObservations.runId,
             status: aiObservations.status,
+            error: aiObservations.error,
           })
           .from(aiObservations)
           .where(inArray(aiObservations.runId, runIds))
@@ -324,6 +339,19 @@ export const AiVisibilityRepository = {
           and(
             eq(aiObservations.runId, runId),
             eq(aiObservations.status, "pending"),
+          ),
+        )
+    ).map((row) => row.id),
+  listFailedObservationIds: async (runId: string, error: string) =>
+    (
+      await db
+        .select({ id: aiObservations.id })
+        .from(aiObservations)
+        .where(
+          and(
+            eq(aiObservations.runId, runId),
+            eq(aiObservations.status, "failed"),
+            eq(aiObservations.error, error),
           ),
         )
     ).map((row) => row.id),

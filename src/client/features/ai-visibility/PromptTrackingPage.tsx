@@ -14,6 +14,7 @@ import {
 } from "@/serverFunctions/ai-visibility";
 import { getStandardErrorMessage } from "@/client/lib/error-messages";
 import {
+  aiBrandLabel,
   type AiPrompt,
   type AiRun,
   type AiTrackerState,
@@ -105,7 +106,12 @@ function PromptTrackingContent({
   const [costMode, setCostMode] = useState<"check" | "schedule" | null>(null);
   const [editingPrompt, setEditingPrompt] = useState<AiPrompt | null>(null);
   const [change, setChange] = useState<AiTrackerPatch | null>(null);
-  const currentRun = selectedRun ?? state.recentRuns[0] ?? null;
+  // A run started here shows at once, before the tracker refetch lists it.
+  // Once listed, the newest run wins, so a later scheduled run takes over.
+  const currentRun =
+    (selectedRun && !state.recentRuns.some((run) => run.id === selectedRun.id)
+      ? selectedRun
+      : state.recentRuns[0]) ?? null;
   const progress = useAiRunProgress(projectId, currentRun);
   const tracker = state.tracker;
   const ownBrand = state.brands.find((brand) => brand.own);
@@ -195,7 +201,9 @@ function PromptTrackingContent({
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-lg font-semibold">{ownBrand?.name}</h2>
+                    <h2 className="text-lg font-semibold">
+                      {ownBrand && aiBrandLabel(ownBrand)}
+                    </h2>
                     <Badge variant={tracker?.enabled ? "success" : "secondary"}>
                       {tracker?.enabled
                         ? `${scheduleLabel(tracker.scheduleInterval)} tracking`

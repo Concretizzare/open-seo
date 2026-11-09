@@ -85,6 +85,42 @@ describe("AI visibility checks", () => {
     ).toEqual([{ status: "failed" }]);
   });
 
+  it("keeps a running check when its workflow lookup fails", async () => {
+    const run = await runCheck({ projectId, maxCostUsd: 1 }, customer);
+    await testDb.db.update(aiRuns).set({
+      status: "running",
+      createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    });
+    workflow.get.mockRejectedValue(new Error("internal error"));
+
+    await expect(
+      runCheck({ projectId, maxCostUsd: 1 }, customer),
+    ).rejects.toMatchObject({ reason: "RUN_IN_PROGRESS", runId: run.id });
+    expect(await repo.getRunInternal(run.id)).toMatchObject({
+      status: "running",
+    });
+  });
+
+  it("terminates a check whose workflow is still running after 12 hours, so it stops blocking", async () => {
+    const stuck = await runCheck({ projectId, maxCostUsd: 1 }, customer);
+    await testDb.db
+      .update(aiRuns)
+      .set({ status: "running", createdAt: "2026-01-01T00:00:00.000Z" });
+    const terminate = vi.fn();
+    workflow.get.mockResolvedValue({
+      status: async () => ({ status: "running" }),
+      terminate,
+    });
+
+    const next = await runCheck({ projectId, maxCostUsd: 1 }, customer);
+
+    expect(next.id).not.toBe(stuck.id);
+    expect(terminate).toHaveBeenCalled();
+    expect(await repo.getRunInternal(stuck.id)).toMatchObject({
+      status: "failed",
+    });
+  });
+
   it("marks only prompts with collected answer text as having results", async () => {
     const run = await runCheck({ projectId, maxCostUsd: 1 }, customer);
     const answers = await repo.getObservations([run.id]);

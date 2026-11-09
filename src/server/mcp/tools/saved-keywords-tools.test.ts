@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getProjectForOrganization: vi.fn(),
   getSavedKeywords: vi.fn(),
   saveKeywords: vi.fn(),
+  getRankTrackers: vi.fn(),
 }));
 
 vi.mock("@/server/features/projects/services/ProjectService", () => ({
@@ -22,6 +23,10 @@ vi.mock("@/server/features/keywords/services/KeywordResearchService", () => ({
   },
 }));
 
+vi.mock("@/server/features/rank-tracking/services/RankTrackingService", () => ({
+  RankTrackingService: { getConfigs: mocks.getRankTrackers },
+}));
+
 const toolContext = makeToolContext();
 
 describe("saved keyword MCP tools", () => {
@@ -31,6 +36,7 @@ describe("saved keyword MCP tools", () => {
       locationCode: 2840,
       languageCode: "en",
     });
+    mocks.getRankTrackers.mockResolvedValue([]);
   });
 
   // Appending is the default: a replace default would silently wipe the
@@ -63,6 +69,7 @@ describe("saved keyword MCP tools", () => {
     );
 
     expect(mocks.saveKeywords).toHaveBeenCalledWith({
+      organizationId: "org_123",
       projectId: "project_1",
       keywords: ["technical seo"],
       tags: ["Content"],
@@ -88,7 +95,10 @@ describe("saved keyword MCP tools", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow("Replacement tags are required");
+    ).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      message: "Replacement tags are required when tagMode is replace.",
+    });
     expect(mocks.saveKeywords).not.toHaveBeenCalled();
   });
 
@@ -142,5 +152,21 @@ describe("saved keyword MCP tools", () => {
     // remove_saved_keywords takes these ids, so both channels must carry them.
     expect(result.structuredContent?.rows?.[0]).toHaveProperty("id", "saved_1");
     expect(textContent(result)).toContain("id:saved_1");
+  });
+
+  it("says a filter matched nothing instead of that no keywords are saved", async () => {
+    mocks.getSavedKeywords.mockResolvedValue({
+      totalCount: 0,
+      tags: [],
+      rows: [],
+    });
+
+    const result = await listSavedKeywordsTool.handler(
+      { projectId: "project_1", tags: ["Content"] },
+      toolContext,
+    );
+
+    expect(textContent(result)).toContain("match this search or tag filter");
+    expect(textContent(result)).not.toContain("No saved keywords yet");
   });
 });

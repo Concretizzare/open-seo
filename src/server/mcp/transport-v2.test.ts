@@ -144,6 +144,7 @@ describe("Agents SDK v2 MCP transport", () => {
       handleAuthenticatedOpenSeoMcpRequest(
         request("POST", modernToolsList, {
           "Mcp-Method": "tools/list",
+          "MCP-Protocol-Version": "2026-07-28",
           ...(origin ? { Origin: origin } : {}),
         }),
         props,

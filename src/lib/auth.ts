@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the one Better Auth configuration: every hook and plugin lives here */
 import { env } from "cloudflare:workers";
 import { betterAuth } from "better-auth";
 import {
@@ -27,18 +28,27 @@ import {
 import { resolveSignInHostedOrganization } from "@/server/auth/default-hosted-organization";
 import { onInvitationAccepted } from "@/server/auth/invited-member";
 import { AuthRepository } from "@/server/auth/repositories/AuthRepository";
+import { GoogleAccountService } from "@/server/features/google/GoogleAccountService";
 import { assertStandaloneSignUpOpen } from "@/server/standalone/sign-up";
 import { captureDubReferralSignup } from "@/server/referrals/dub";
-import { captureMetaSignup } from "@/server/referrals/meta";
+import {
+  captureMetaSetupStep,
+  captureMetaSignup,
+  MetaSetupEvent,
+} from "@/server/referrals/meta";
 import {
   captureSignUpCompleted,
-  saveSignUpCampaign,
+  saveSignUpSource,
 } from "@/server/auth/sign-up-analytics";
 import {
   productUpdatesOnByDefault,
   requestPrivacyChoices,
 } from "@/shared/privacy-choices";
-import { markOnboardingMilestone } from "@/server/email/onboarding-drip";
+import { markMcpConnected } from "@/server/features/activation/mcpActivation";
+import { assertNotScheduledForDeletion } from "@/server/account-deletion/signInBlock";
+import { claimGuestFromCookie } from "@/server/auth/guest-accounts";
+import { RETURNING_BROWSER_COOKIE } from "@/server/auth/guest-cookies";
+import { isGuestEmail } from "@/shared/guest-account";
 import {
   sendHostedPasswordResetEmail,
   sendHostedVerificationEmail,
@@ -57,7 +67,17 @@ const hostedBaseUrlSchema = z
     );
   }, "BETTER_AUTH_URL must use https or a loopback host");
 
-const createdApiKeySchema = z.object({ referenceId: z.string() });
+const createdApiKeySchema = z.object({
+  referenceId: z.string(),
+  // Bound by the api-key/create before hook.
+  metadata: z.looseObject({ organizationId: z.string().min(1) }),
+});
+
+// The member row /organization/leave returns once it has been deleted.
+const leftMemberSchema = z.object({
+  userId: z.string().min(1),
+  organizationId: z.string().min(1),
+});
 
 function createAuth() {
   // Modes with their own accounts need the real configured URL (cookies,
@@ -129,6 +149,16 @@ function createAuth() {
                       "The owner role can't be granted from here. Use Transfer ownership in organization settings.",
                   });
                 }
+              },
+              // Before, not after: a failed disconnect then fails the removal,
+              // which the admin can retry, instead of leaving a removed
+              // member's Google grant serving the organization. Leaving on
+              // one's own skips these hooks; the after hook below covers it.
+              beforeRemoveMember: async ({ member: removedMember }) => {
+                await GoogleAccountService.disconnectMember(
+                  removedMember.userId,
+                  removedMember.organizationId,
+                );
               },
               afterAcceptInvitation: async ({ member: acceptedMember }) => {
                 await onInvitationAccepted({
@@ -268,6 +298,10 @@ function createAuth() {
         // gains nothing: a key pointed at an org they are not in fails the
         // membership check on its next /mcp call, and one pointed at an org
         // they are in is no different from a key created there.
+        // Marked when the user creates an MCP API key, the API-key counterpart
+        // of OAuth's authorize step. Not on each /mcp request: isolates share
+        // no memory, so every one would re-send it and hit Loops' team-wide
+        // rate limit.
         if (ctx.path !== "/api-key/create") return;
         // Minting a credential must see the stored session, not the cookie
         // cache: a cookie from a session revoked minutes ago must not mint a
@@ -287,21 +321,48 @@ function createAuth() {
         }
         return { context: { body: { metadata: { organizationId } } } };
       }),
-      // Marked when the user creates an MCP API key, the API-key counterpart
-      // of OAuth's authorize step. Not on each /mcp request: isolates share no
-      // memory, so every one would re-send it and hit Loops' team-wide rate
-      // limit.
       after: createAuthMiddleware(async (ctx) => {
+        // Remember that this browser has signed in to a real account, so a
+        // lapsed session later gets the sign-in page instead of a guest
+        // (checkGuestEligibility).
+        const newSession = ctx.context.newSession;
+        if (newSession && !isGuestEmail(newSession.user.email)) {
+          ctx.setCookie(RETURNING_BROWSER_COOKIE, "1", {
+            path: "/",
+            maxAge: 400 * 24 * 60 * 60,
+            httpOnly: true,
+            secure: true,
+            sameSite: "lax",
+          });
+        }
+        if (ctx.path === "/organization/leave") {
+          const left = leftMemberSchema.safeParse(ctx.context.returned);
+          if (left.success)
+            await GoogleAccountService.disconnectMember(
+              left.data.userId,
+              left.data.organizationId,
+            );
+          return;
+        }
+        // Marked when the user creates an MCP API key, the API-key counterpart
+        // of OAuth's authorize step. Not on each /mcp request: isolates share
+        // no memory, so every one would re-send it and hit Loops' team-wide
+        // rate limit.
         if (ctx.path !== "/api-key/create") return;
         const created = createdApiKeySchema.safeParse(ctx.context.returned);
         if (!created.success) return;
-        const user = await AuthRepository.getHostedUser(
-          created.data.referenceId,
-        );
+        const { referenceId, metadata } = created.data;
+        const user = await AuthRepository.getHostedUser(referenceId);
         if (!user) return;
-        await markOnboardingMilestone(
-          { userId: user.id, userEmail: user.email },
-          "mcpConnected",
+        await markMcpConnected({
+          userId: user.id,
+          userEmail: user.email,
+          organizationId: metadata.organizationId,
+        });
+        await captureMetaSetupStep(
+          MetaSetupEvent.AgentConnected,
+          metadata.organizationId,
+          ctx.request,
         );
       }),
     },
@@ -350,8 +411,8 @@ function createAuth() {
               }
               // Sent only if the separate advertising (Meta) choice allows it.
               captureMetaSignup(ctx?.request);
-              await saveSignUpCampaign(user.id, ctx).catch((error) =>
-                console.error("sign-up campaign save failed", error),
+              await saveSignUpSource(user.id, ctx).catch((error) =>
+                console.error("sign-up source save failed", error),
               );
               await captureSignUpCompleted(user, ctx).catch((error) =>
                 console.error("sign-up analytics failed", error),
@@ -362,15 +423,21 @@ function createAuth() {
       },
       session: {
         create: {
-          before: async (session) => {
-            // Runs on every sign-in (each sign-in mints a session row).
-            // Resolution order: last-active org while still a member → most
-            // recently joined org → newly created default organization —
-            // except that a membership-less user with a pending invitation
-            // gets no organization minted (null active org) so accepting the invite
-            // leaves them in exactly the inviter's org. Inject Better Auth's
-            // createOrganization so the helper can stay reusable without
-            // importing auth.ts and creating a cycle.
+          before: async (session, ctx) => {
+            // Runs on every sign-in (each sign-in mints a session row). Refuses
+            // an account waiting to be deleted, claims the guest account an
+            // agent connected as in this browser (its org then counts as a
+            // membership below), then resolves the active org:
+            // last-active org while still a member → most recently joined → a
+            // new default one — except a membership-less user with a pending
+            // invitation gets none (null active org), so accepting leaves them
+            // in exactly the inviter's org. createOrganization is injected so
+            // the helper needn't import auth.ts and create a cycle.
+            await assertNotScheduledForDeletion(session.userId);
+            await claimGuestFromCookie(
+              ctx?.request?.headers ?? ctx?.headers,
+              session.userId,
+            );
             const resolved = await resolveSignInHostedOrganization(
               session.userId,
               (body) => auth.api.createOrganization({ body }),

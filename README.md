@@ -16,6 +16,12 @@ Try OpenSEO for free on our website. If you want to support the project, a hoste
 
 [openseo.so](https://openseo.so)
 
+### EveryApp
+
+Host OpenSEO and other open source apps on our platform EveryApp.
+
+[Self-host on EveryApp and give it a star →](https://github.com/every-app/every-app)
+
 ## Why use OpenSEO?
 
 - Best in class MCP and AI Skills.

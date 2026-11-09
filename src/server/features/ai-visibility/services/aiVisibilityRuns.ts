@@ -14,36 +14,40 @@ import {
 } from "@/server/billing/subscription";
 import { AppError } from "@/server/lib/errors";
 import { sendCreditsExhaustedEvent } from "@/server/email/onboarding-drip";
-import type { AiRun } from "@/shared/ai-visibility";
+import { ownBrandName, type AiRun } from "@/shared/ai-visibility";
 import type { RunAiCheckInput } from "@/types/schemas/ai-visibility";
 import { requireConfiguration } from "./aiVisibilityMutation";
 import { aiPromptIsBranded } from "./aiVisibilityMatching";
 import { aiRunView } from "./aiVisibilityResults";
 import { aiCostForAnswers } from "./aiVisibilityCost";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
-import { startWorkflow } from "@/server/lib/startWorkflow";
+import {
+  isWorkflowActive,
+  readWorkflowStatus,
+  startWorkflow,
+  STUCK_RUN_AFTER_MS,
+  terminateStuckWorkflow,
+} from "@/server/lib/startWorkflow";
 
-const ACTIVE_WORKFLOW_STATUSES = new Set([
-  "queued",
-  "running",
-  "waiting",
-  "waitingForPause",
-  "paused",
-]);
 const STARTUP_GRACE_MS = 60_000;
 
 /**
  * Why an active run's workflow is no longer collecting it, or null while it
- * is. The workflow instance id is the run id, like rank checks.
+ * is. The workflow instance id is the run id, like rank checks. A run active
+ * for too long is stuck, even if its workflow still reports running.
  */
 async function staleRunReason(run: RunRow): Promise<string | null> {
   if (run.status !== "queued" && run.status !== "running") return null;
-  const status = await env.AI_VISIBILITY_WORKFLOW.get(run.id)
-    .then((instance) => instance.status())
-    .catch(() => null);
-  if (status && ACTIVE_WORKFLOW_STATUSES.has(status.status)) return null;
-  if (Date.now() - Date.parse(run.createdAt) < STARTUP_GRACE_MS) return null;
-  if (!status) return AI_ANSWER_FAILURES.stoppedBeforeStart;
+  const status = await readWorkflowStatus(env.AI_VISIBILITY_WORKFLOW, run.id);
+  const ageMs = Date.now() - Date.parse(run.createdAt);
+  // A failed lookup says nothing about the workflow: treat it as still active.
+  if (status === null || (status !== "missing" && isWorkflowActive(status))) {
+    if (ageMs < STUCK_RUN_AFTER_MS) return null;
+    console.warn(`[ai-visibility] ${run.id} workflow stuck`);
+    return AI_ANSWER_FAILURES.stopped;
+  }
+  if (ageMs < STARTUP_GRACE_MS) return null;
+  if (status === "missing") return AI_ANSWER_FAILURES.stoppedBeforeStart;
   console.warn(`[ai-visibility] ${run.id} workflow stopped (${status.status})`);
   return AI_ANSWER_FAILURES.stopped;
 }
@@ -53,7 +57,7 @@ export async function failAiRun(runId: string, error: string) {
   const run = await repo.getRunInternal(runId);
   if (!run || (run.status !== "queued" && run.status !== "running")) return;
   await repo.failPendingObservations(runId, error);
-  await repo.updateRun(runId, {
+  await repo.updateActiveRun(runId, {
     status: "failed",
     completedAt: new Date().toISOString(),
   });
@@ -63,6 +67,8 @@ export async function failAiRun(runId: string, error: string) {
 export async function reconcileAiRun(run: RunRow): Promise<RunRow> {
   const reason = await staleRunReason(run);
   if (!reason) return run;
+  // A stuck instance may still be running: stop it so it posts no more calls.
+  await terminateStuckWorkflow(env.AI_VISIBILITY_WORKFLOW, run.id);
   await failAiRun(run.id, reason);
   return (await repo.getRunInternal(run.id)) ?? run;
 }
@@ -121,7 +127,7 @@ export async function startRun(
       );
     }
   }
-  const own = { name: project.name, domain: project.domain };
+  const own = { name: ownBrandName(project), domain: project.domain };
   // Two attempts: once normally, once after failing a stale blocker.
   for (let attempt = 0; attempt < 2; attempt++) {
     const id = crypto.randomUUID();
@@ -150,10 +156,8 @@ export async function startRun(
       // The one-active-run index rejected the insert, or it truly failed.
       const blocker = await repo.getActiveRun(config.tracker.id);
       if (!blocker) throw error;
-      if (attempt === 0 && (await staleRunReason(blocker))) {
-        await reconcileAiRun(blocker);
+      if (attempt === 0 && (await reconcileAiRun(blocker)).status === "failed")
         continue;
-      }
       throw new AiVisibilityError(
         "RUN_IN_PROGRESS",
         "A check is already collecting answers. Read that run instead of starting another; this check was not started or charged.",

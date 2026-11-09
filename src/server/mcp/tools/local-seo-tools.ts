@@ -249,7 +249,7 @@ export const getBusinessProfileTool = {
     return mcpResponse({
       text: profile
         ? `Google Business Profile:\n${formatProfileText(profile)}`
-        : "No Google Business Profile matched that identifier. Try a cid or placeId from get_local_serp_results.",
+        : "No Google Business Profile matched that identifier. For a name lookup, call again with `near` set to the storefront's coordinate, or find its cid with search_local_businesses (query = the business name). Both charge credits.",
       meta: buildProjectMeta(context, args.projectId, `/p/${args.projectId}`),
       structuredContent: { profile },
     });
@@ -443,7 +443,9 @@ export const getBusinessReviewsTool = {
     return mcpResponse({
       text:
         reviews.length === 0
-          ? `${header} This profile has no reviews matching the request.`
+          ? outcome.result
+            ? `${header} This profile has no reviews matching the request.`
+            : `${header} Google returned nothing for this business: either it has no reviews or the identifier didn't match a profile. Confirm the business with get_business_profile, or pass its cid.`
           : `${header} Reviews longer than 300 characters and owner replies longer than 200 end in "…" (full text in structuredContent).\n${formatMcpTable(reviews, REVIEW_COLUMNS)}`,
       meta: buildProjectMeta(context, args.projectId, `/p/${args.projectId}`),
       structuredContent: {
@@ -584,7 +586,9 @@ export const getBusinessUpdatesTool = {
     return mcpResponse({
       text:
         updates.length === 0
-          ? `${header} This profile has published no posts.`
+          ? outcome.result
+            ? `${header} This profile has published no posts.`
+            : `${header} Google returned nothing for this business: either it has no posts or the identifier didn't match a profile. Confirm the business with get_business_profile, or pass its cid.`
           : `${header} Posts longer than 300 characters end in "…" (full text in structuredContent).\n${formatMcpTable(updates, BUSINESS_UPDATE_COLUMNS)}`,
       meta: buildProjectMeta(context, args.projectId, `/p/${args.projectId}`),
       structuredContent: { status: "completed", taskId, updates },
@@ -887,7 +891,7 @@ const GRID_POINT_COLUMNS: McpTableColumn<GridPointResult>[] = [
 
 function formatMatchedBusiness(business: MatchedBusiness | null): string {
   if (!business) {
-    return "Matched business: none — the target was not found at any point, so no point has a rank.";
+    return "Matched business: none — the target was not found at any point, so no point has a rank. If its name may not match the Maps listing, get its cid from get_local_serp_results at the center, then call get_local_rank_grid again with target.cid and the same other arguments within an hour; that re-reads these searches at no extra charge.";
   }
   return `Matched business: ${formatMcpCell(business.title)} (cid ${formatMcpCell(business.cid)}, place_id ${formatMcpCell(business.placeId)}).`;
 }

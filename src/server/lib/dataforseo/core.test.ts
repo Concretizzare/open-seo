@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/server/lib/runtime-env", () => ({
@@ -30,6 +31,25 @@ describe("DataForSEO transport", () => {
     expect(new Headers(init?.headers).get("Authorization")).toBe(
       "Basic encoded-credentials",
     );
+    expect(new Headers(init?.headers).get("Accept-Encoding")).toBe("gzip");
+  });
+
+  // The Docker edition's runtime hands the body over still gzipped because we
+  // set Accept-Encoding ourselves; parsing it raw failed every call.
+  it("inflates a body the runtime left gzipped", async () => {
+    const envelope = { status_code: 20000, tasks: [] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(gzipSync(JSON.stringify(envelope)), {
+          headers: { "Content-Encoding": "gzip" },
+        }),
+      ),
+    );
+
+    await expect(
+      dataforseoPost("/v3/backlinks/summary/live", []),
+    ).resolves.toEqual(envelope);
   });
 
   // An unverified account answers with HTTP 403 (status_code 40104). Left as
@@ -69,4 +89,25 @@ describe("DataForSEO transport", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
     },
   );
+
+  // Seen in production: headers arrive in time, then the deadline aborts
+  // while the body is still streaming in.
+  it("maps a timeout while reading the body to UPSTREAM_UNAVAILABLE", async () => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.error(new DOMException("aborted", "TimeoutError"));
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    );
+
+    await expect(
+      dataforseoPost("/v3/dataforseo_labs/google/ranked_keywords/live", []),
+    ).rejects.toMatchObject({
+      code: "UPSTREAM_UNAVAILABLE",
+      name: "DataForSEOTimeoutError",
+    });
+  });
 });

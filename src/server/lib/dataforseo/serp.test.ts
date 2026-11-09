@@ -11,8 +11,10 @@ import {
   fetchLiveSerp,
   fetchLocalSerpTaskResult,
   fetchRankCheckTaskResult,
+  fetchSerpTaskResult,
   postLocalSerpTasks,
   postRankCheckTasks,
+  postSerpReadTasks,
 } from "@/server/lib/dataforseo/serp";
 
 function parseDataforseoRequestBody(init: RequestInit | undefined): unknown {
@@ -99,7 +101,6 @@ describe("rank check task queue", () => {
       locationCode: 2840,
       languageCode: "en",
       depth: 20,
-      targetDomain: "example.com",
     });
 
     expect(
@@ -110,18 +111,11 @@ describe("rank check task queue", () => {
       ),
     ).toEqual(["https://api.dataforseo.com/v3/serp/google/organic/task_post"]);
 
-    // Every posted task asks DataForSEO to stop crawling at the target's
-    // organic listing — that is what cuts the actual crawl cost for ranking
-    // domains without false "not ranking" stops on sitelinks/PAA mentions.
-    const stopCrawl = {
-      stop_crawl_on_match: [
-        { match_value: "example.com", match_type: "with_subdomains" },
-      ],
-      find_targets_in: ["organic"],
-    };
+    // DataForSEO leaves most results wrapped in google.com/goto on tasks that
+    // set stop_crawl_on_match, so no posted task may ask for it.
     expect(
-      parseDataforseoRequestBody(fetchMock.mock.calls[0]?.[1]),
-    ).toMatchObject([stopCrawl, stopCrawl, stopCrawl]);
+      JSON.stringify(parseDataforseoRequestBody(fetchMock.mock.calls[0]?.[1])),
+    ).not.toContain("stop_crawl_on_match");
     expect(result.data).toEqual([
       {
         keyword: "alpha",
@@ -217,6 +211,55 @@ describe("rank check task queue", () => {
         serpFeatures: ["ai_overview", "organic", "ai_overview_citation"],
       },
     });
+  });
+  it("credits results wrapped in a google.com/goto redirect to the site in their breadcrumb", async () => {
+    const goto = {
+      domain: "google.com",
+      url: "https://google.com/goto?url=CAES",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          status_code: 20000,
+          tasks: [
+            {
+              id: "task-a",
+              status_code: 20000,
+              cost: 0,
+              path: ["v3", "serp", "google", "organic", "task_get", "advanced"],
+              result: [
+                {
+                  items: [
+                    {
+                      type: "organic",
+                      rank_group: 1,
+                      ...goto,
+                      breadcrumb: "230+ comments · 2 years ago",
+                    },
+                    {
+                      type: "organic",
+                      rank_group: 2,
+                      ...goto,
+                      breadcrumb: "https://www.example.com › blog",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const outcome = await fetchRankCheckTaskResult({
+      taskId: "task-a",
+      keywordId: "kw-1",
+      keyword: "alpha",
+      targetDomain: "example.com",
+    });
+
+    expect(outcome).toMatchObject({ result: { position: 2 } });
   });
 });
 
@@ -342,5 +385,54 @@ describe("Maps task queue", () => {
       status: "completed",
       items: [],
     });
+  });
+});
+
+describe("fetchSerpTaskResult", () => {
+  it("stops waiting on a poll when its signal fires", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Timed out", "TimeoutError"));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchSerpTaskResult("read-1", AbortSignal.timeout(1)),
+    ).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+  });
+});
+
+describe("postSerpReadTasks", () => {
+  it("posts every read at high priority, bills them all, and returns only the accepted tasks", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        status_code: 20000,
+        tasks: [
+          { id: "read-1", status_code: 20100, cost: 0.0012 },
+          { id: "read-2", status_code: 40501, cost: 0.0012 },
+          { id: "read-3", status_code: 20100, cost: 0.0012 },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { data, billing } = await postSerpReadTasks({
+      keyword: "seo tools",
+      locationCode: 2840,
+      languageCode: "en",
+    });
+
+    expect(data).toEqual(["read-1", "read-3"]);
+    expect(billing.costUsd).toBeCloseTo(0.0036);
+    const read: unknown = expect.objectContaining({ depth: 10, priority: 2 });
+    expect(parseDataforseoRequestBody(fetchMock.mock.calls[0][1])).toEqual([
+      read,
+      read,
+      read,
+    ]);
   });
 });

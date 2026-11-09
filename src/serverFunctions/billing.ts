@@ -8,6 +8,10 @@ import {
   TOP_UP_MIN_USD,
 } from "@/shared/billing";
 import { setOrganizationAutoReload } from "@/server/billing/auto-reload";
+import {
+  previewOrganizationPlanUpgrade,
+  upgradeOrganizationPlan,
+} from "@/server/billing/plan-upgrade";
 import { getOrganizationBillingAccount } from "@/server/billing/billing-account";
 import {
   createBillingPortalUrl,
@@ -20,7 +24,10 @@ import {
 } from "@/server/billing/invoices";
 import { getOrganizationBillingUsage } from "@/server/billing/usage";
 import { getPublicOrigin } from "@/server/mcp/public-origin";
-import { pinMetaCheckout } from "@/server/referrals/meta";
+import {
+  captureMetaCheckoutStart,
+  pinMetaCheckout,
+} from "@/server/referrals/meta";
 import { requireAuthenticatedContext } from "@/serverFunctions/middleware";
 import { timeZoneSchema } from "@/types/schemas/schedule-time";
 
@@ -50,6 +57,36 @@ export const createPlanCheckout = createServerFn({ method: "POST" })
     await pinMetaCheckout(context.organizationId, request);
     return url;
   });
+
+// The click on Subscribe. createPlanCheckout can't report it: the link is made
+// ahead of time, when /subscribe loads.
+export const reportCheckoutStart = createServerFn({ method: "POST" })
+  .middleware(requireAuthenticatedContext)
+  .validator(z.object({ planId: z.enum(CHECKOUT_PLAN_IDS) }))
+  .handler(({ data }) => {
+    captureMetaCheckoutStart(getRequest(), data.planId);
+  });
+
+const upgradePlanInput = z.object({ planId: z.enum(CHECKOUT_PLAN_IDS) });
+
+export const previewPlanUpgrade = createServerFn({ method: "POST" })
+  .middleware(requireAuthenticatedContext)
+  .validator(upgradePlanInput)
+  .handler(({ data, context }) =>
+    previewOrganizationPlanUpgrade(context, data),
+  );
+
+// Charges the saved card at once, unlike the checkouts above: the page shows
+// the preview's charge before the click.
+export const upgradePlan = createServerFn({ method: "POST" })
+  .middleware(requireAuthenticatedContext)
+  .validator(upgradePlanInput)
+  .handler(({ data, context }) =>
+    upgradeOrganizationPlan(context, {
+      ...data,
+      origin: getPublicOrigin(getRequest()),
+    }),
+  );
 
 export const createTopUpCheckout = createServerFn({ method: "POST" })
   .middleware(requireAuthenticatedContext)
